@@ -36,7 +36,7 @@ st.markdown(f"""
     }}
     [data-testid="InputInstructions"] {{ display: none !important; }}
     small {{ display: none !important; }}
-    .stNumberInput div[data-baseweb="input"], .stTextInput div[data-baseweb="input"] {{
+    .stNumberInput div[data-baseweb="input"], .stTextInput div[data-baseweb="input"], .stSelectbox div[data-baseweb="select"] {{
         background-color: #111; color: white; border: 1px solid #333;
     }}
     h1, h2, h3 {{ color: {NEON_RED} !important; font-family: 'Segoe UI', sans-serif; font-weight: 800; }}
@@ -48,19 +48,20 @@ st.markdown(f"""
     </style>
     """, unsafe_allow_html=True)
 
-# --- FONKSİYONLAR (CLOUD UYUMLU) ---
+# --- FONKSİYONLAR ---
 @st.cache_resource
 def baglanti_kur():
     SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    
-    # 🔴 DEPLOYMENT AYARI: Önce Cloud Secrets'a bakar, bulamazsa yerel dosyaya bakar.
     if "gcp_service_account" in st.secrets:
-        creds_dict = st.secrets["gcp_service_account"]
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
         credentials = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     else:
-        # Localde çalışırken burası çalışır
-        credentials = Credentials.from_service_account_file("secrets.json", scopes=SCOPES)
-        
+        try:
+            credentials = Credentials.from_service_account_file("secrets.json", scopes=SCOPES)
+        except FileNotFoundError:
+            st.error("HATA: Secrets bulunamadı!"); st.stop()
     return gspread.authorize(credentials)
 
 def get_data(sheet_name):
@@ -75,8 +76,7 @@ def create_neon_chart(df, x_col, y_col, title, color_hex, exam_limit):
     fig = px.bar(df, x='label', y=y_col, text=y_col, title=title, color_discrete_sequence=[color_hex])
     fig.update_traces(textposition='outside', texttemplate='%{text:.2f}', textfont_size=14, textfont_color='white', textfont_weight='bold', marker_line_width=0, opacity=1.0, cliponaxis=False)
     fig.update_layout(
-        barmode='group', # Üst üste binmeyi engeller
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="white"),
+        barmode='group', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="white"),
         xaxis=dict(showgrid=False, title="", type='category'),
         yaxis=dict(showgrid=True, gridcolor='#222', title="", range=[0, y_view_max], dtick=5),
         margin=dict(t=50, b=20, l=20, r=20), height=350, showlegend=False
@@ -104,6 +104,7 @@ if not st.session_state['logged_in']:
                 try:
                     with st.spinner("🚀 Bağlanılıyor..."):
                         ws, df_u = get_data("users")
+                        # Kullanıcıyı bul
                         user = df_u[(df_u['username'] == u) & (df_u['password'].astype(str) == p)]
                         if not user.empty:
                             st.session_state['logged_in'] = True
@@ -118,6 +119,7 @@ if not st.session_state['logged_in']:
 else:
     user = st.session_state['user_info']
     aktif_kullanici = user['username']
+    kullanici_rolu = user.get('role', 'student') # Rolü al
     alan = user.get('alan', 'SAY')
     
     with st.sidebar:
@@ -125,6 +127,32 @@ else:
         st.markdown(f"<div style='text-align:center; background:#111; padding:5px; border-radius:5px; border:1px solid {NEON_RED}; color:{NEON_RED}; font-weight:bold;'>{alan} MODU</div>", unsafe_allow_html=True)
         st.divider()
         
+        # --- 👑 ADMIN PANELİ (Sadece Admin Görür) ---
+        if kullanici_rolu == 'admin':
+            with st.expander("👑 YÖNETİCİ PANELİ", expanded=False):
+                st.caption("Yeni Öğrenci Ekle")
+                with st.form("add_user_form"):
+                    new_user = st.text_input("Kullanıcı Adı")
+                    new_pass = st.text_input("Şifre")
+                    new_name = st.text_input("Ad Soyad")
+                    new_alan = st.selectbox("Alan", ["SAY", "EA", "SOZ", "DIL"])
+                    
+                    if st.form_submit_button("Öğrenciyi Kaydet"):
+                        try:
+                            ws_users, df_users = get_data("users")
+                            if new_user in df_users['username'].values:
+                                st.error("Bu kullanıcı adı zaten var!")
+                            elif not new_user or not new_pass:
+                                st.warning("Bilgiler boş olamaz!")
+                            else:
+                                # Yeni satır ekle: user, pass, name, role=student, alan
+                                ws_users.append_row([new_user, new_pass, new_name, "student", new_alan])
+                                st.success(f"✅ {new_name} eklendi!")
+                                time.sleep(1); st.rerun()
+                        except Exception as e: st.error(f"Hata: {e}")
+            st.divider()
+        # ---------------------------------------------
+
         with st.expander("➕ DENEME EKLE", expanded=True):
             tur = st.radio("Sınav Türü", ["TYT", "AYT"], horizontal=True)
             if tur == "TYT": st.caption("📘 TYT GİRİŞİ")
